@@ -1618,6 +1618,7 @@ int main(int argc, char **argv)
    	PetscOptionsGetInt(NULL, NULL, "-inlet_tmprt", &inletprofile_tmprt, NULL);
     PetscOptionsGetInt(NULL, NULL, "-str", &STRONG_COUPLING, NULL);
     PetscOptionsGetInt(NULL, NULL, "-rs_fsi", &rstart_fsi, NULL);
+    PetscOptionsGetInt(NULL, NULL, "-rstart_fsi", &rstart_fsi, NULL);
     PetscOptionsGetInt(NULL, NULL, "-cop", &cop, NULL);
     PetscOptionsGetInt(NULL, NULL, "-fish", &fish, NULL);
 
@@ -1979,21 +1980,20 @@ int main(int argc, char **argv)
         // Savepoints based on coordinates - Hossein
       if(fp!=NULL) {
 
-			i=0;
+            i=0;
+            while (i < 6000 && fscanf(fp, "%le %le %le", &save_coor[i][0], &save_coor[i][1], &save_coor[i][2]) == 3) {
+                i++;
+            }
 
-			do {
+            if (!feof(fp)) {
+                PetscPrintf(PETSC_COMM_WORLD, "Warning: malformed or oversized savepoints file, using first %d entries.\n", i);
+            }
 
-				fscanf(fp, "%le %le %le\n", &save_coor[i][0], &save_coor[i][1], &save_coor[i][2]); // Hossein
+            nsave_points=i;
 
-				i++;
+            fclose(fp);
 
-			} while(!feof(fp));
-
-			nsave_points=i;
-
-			fclose(fp);
-
-		}
+        }
 
     char saveoption_file_level[400];
     sprintf(saveoption_file_level, "%s/savepoints_level", path);
@@ -2001,10 +2001,12 @@ int main(int argc, char **argv)
 
     if(fpl!=NULL) {
         i=0;
-        do {
-            fscanf(fpl, "%d %d %d\n", &save_point_level[i][0], &save_point_level[i][1], &save_point_level[i][2]);
+        while (i < 3000 && fscanf(fpl, "%d %d %d", &save_point_level[i][0], &save_point_level[i][1], &save_point_level[i][2]) == 3) {
             i++;
-        } while(!feof(fpl));
+        }
+        if (!feof(fpl)) {
+            PetscPrintf(PETSC_COMM_WORLD, "Warning: malformed or oversized savepoints_level file, using first %d entries.\n", i);
+        }
         nsave_points_level=i;
         fclose(fpl);
     }
@@ -2064,9 +2066,12 @@ int main(int argc, char **argv)
     if(k_periodic) PetscPrintf(PETSC_COMM_WORLD, "\nK-Periodic \n");
     if(kk_periodic) PetscPrintf(PETSC_COMM_WORLD, "\nKK-Periodic \n");
 
+    PetscBool flux_set = PETSC_FALSE;
     PetscOptionsGetReal(NULL, NULL, "-max_cs", &max_cs, NULL);
-    PetscOptionsGetReal(NULL, NULL, "-flux", &inlet_flux, NULL);            // Seokkoo Kang: the amount of inlet flux, if not set mean bulk velocity is set to 1
-    PetscPrintf(PETSC_COMM_WORLD, "\nControl.dat value for flux = %f", *(&inlet_flux), "\n");
+    PetscOptionsGetReal(NULL, NULL, "-flux", &inlet_flux, &flux_set);            // Seokkoo Kang: the amount of inlet flux, if not set mean bulk velocity is set to 1
+    PetscOptionsGetReal(NULL, NULL, "-inlet_flux", &inlet_flux, &flux_set);
+    PetscPrintf(PETSC_COMM_WORLD, "\nControl.dat value for flux = %f\n", inlet_flux);
+    if (!flux_set) PetscPrintf(PETSC_COMM_WORLD, "Warning: -flux/-inlet_flux not set, using default inlet_flux=%f\n", inlet_flux);
     PetscOptionsGetReal(NULL, NULL, "-imp_tol", &imp_free_tol, NULL);        // Seokkoo Kang: tolerance of implicit matrix free solver. 1.e-4 is enough for most cases.
     PetscOptionsGetReal(NULL, NULL, "-poisson_tol", &poisson_tol, NULL);        // Seokkoo Kang: tolerance of implicit matrix free solver. 1.e-4 is enough for most cases.
     PetscOptionsGetReal(NULL, NULL, "-les_eps", &les_eps, NULL);        // Seokkoo Kang: small value for preventing very large Cs values in les>1
@@ -2127,16 +2132,49 @@ int main(int argc, char **argv)
     L_dim=1.0;//0.0254;
 
     if (MHV) NumberOfBodies=3;
+    if (rotor_model < 0 || rotor_model > 6) {
+        PetscPrintf(PETSC_COMM_WORLD, "Invalid rotor_model=%d\n", (int)rotor_model);
+        SETERRQ(PETSC_COMM_WORLD, PETSC_ERR_ARG_OUTOFRANGE, "Invalid -rotor_modeled option (supported values: 0..6)");
+    }
+    if (NumberOfBodies <= 0 || NumberOfBodies > 1000000) {
+        PetscPrintf(PETSC_COMM_WORLD, "Invalid NumberOfBodies=%d\n", (int)NumberOfBodies);
+        SETERRQ(PETSC_COMM_WORLD, PETSC_ERR_ARG_OUTOFRANGE, "Invalid -body option (must be >0 and reasonable)");
+    }
+    if (rotor_model > 0 && (NumberOfTurbines <= 0 || NumberOfTurbines > 1000000)) {
+        PetscPrintf(PETSC_COMM_WORLD, "Invalid NumberOfTurbines=%d\n", (int)NumberOfTurbines);
+        SETERRQ(PETSC_COMM_WORLD, PETSC_ERR_ARG_OUTOFRANGE, "Invalid -turbine option (must be >0 and reasonable)");
+    }
+    if (nacelle_model && (NumberOfNacelle <= 0 || NumberOfNacelle > 1000000)) {
+        PetscPrintf(PETSC_COMM_WORLD, "Invalid NumberOfNacelle=%d\n", (int)NumberOfNacelle);
+        SETERRQ(PETSC_COMM_WORLD, PETSC_ERR_ARG_OUTOFRANGE, "Invalid -NumberOfNacelle option (must be >0 and reasonable)");
+    }
+
+#define STARTUP_ALLOC_GUARD(tag, count, type) do { \
+    PetscInt64 _n = (PetscInt64)(count); \
+    PetscInt64 _bytes = _n * (PetscInt64)sizeof(type); \
+    if (_n <= 0 || _bytes <= 0 || _bytes > ((PetscInt64)1 << 40)) { \
+        PetscPrintf(PETSC_COMM_WORLD, "Invalid startup allocation %s: count=%lld sizeof(%s)=%zu bytes=%lld\n", \
+                    (tag), (long long)_n, #type, sizeof(type), (long long)_bytes); \
+        SETERRQ(PETSC_COMM_WORLD, PETSC_ERR_MEM, "Startup allocation size is invalid or absurdly large"); \
+    } \
+    PetscPrintf(PETSC_COMM_WORLD, "Startup allocation %s: count=%lld sizeof(%s)=%zu bytes=%lld\n", \
+                (tag), (long long)_n, #type, sizeof(type), (long long)_bytes); \
+} while (0)
+
     if (immersed) {
-        PetscMalloc(NumberOfBodies*sizeof(IBMNodes), &ibm);
-        PetscMalloc(NumberOfBodies*sizeof(FSInfo), &fsi);
+        STARTUP_ALLOC_GUARD("ibm", NumberOfBodies, IBMNodes);
+        PetscCall(PetscMalloc1(NumberOfBodies, &ibm));
+        STARTUP_ALLOC_GUARD("fsi", NumberOfBodies, FSInfo);
+        PetscCall(PetscMalloc1(NumberOfBodies, &fsi));
         ibm_ptr = ibm;
         fsi_ptr = fsi;
     }
 
     if (rotor_model == 1)  {
-        PetscMalloc(NumberOfTurbines*sizeof(IBMNodes), &wtm);
-        PetscMalloc(NumberOfTurbines*sizeof(FSInfo), &fsi_wt);
+        STARTUP_ALLOC_GUARD("wtm", NumberOfTurbines, IBMNodes);
+        PetscCall(PetscMalloc1(NumberOfTurbines, &wtm));
+        STARTUP_ALLOC_GUARD("fsi_wt", NumberOfTurbines, FSInfo);
+        PetscCall(PetscMalloc1(NumberOfTurbines, &fsi_wt));
         for (i=0;i<NumberOfTurbines;i++) {
             fsi_wt[i].angvel_x=0;
             fsi_wt[i].angvel_y=0;
@@ -2146,44 +2184,55 @@ int main(int argc, char **argv)
     }
 
     if (rotor_model == 2)  {
-            PetscMalloc(NumberOfTurbines*sizeof(IBMNodes), &wtm);
-            PetscMalloc(NumberOfTurbines*sizeof(FSInfo), &fsi_wt);
+            STARTUP_ALLOC_GUARD("wtm", NumberOfTurbines, IBMNodes);
+            PetscCall(PetscMalloc1(NumberOfTurbines, &wtm));
+            STARTUP_ALLOC_GUARD("fsi_wt", NumberOfTurbines, FSInfo);
+            PetscCall(PetscMalloc1(NumberOfTurbines, &fsi_wt));
             for (i=0;i<NumberOfTurbines;i++) {
                 fsi_wt[i].angvel_x=0;
                 fsi_wt[i].angvel_y=0;
                 fsi_wt[i].angvel_z=0;
                 fsi_wt[i].angvel_axis=0.0;
             }
-            PetscMalloc(NumberOfTurbines*sizeof(IBMNodes), &ibm_ACD);
+            STARTUP_ALLOC_GUARD("ibm_ACD", NumberOfTurbines, IBMNodes);
+            PetscCall(PetscMalloc1(NumberOfTurbines, &ibm_ACD));
      }
 
     if (rotor_model == 3)  {
-        PetscMalloc(NumberOfTurbines*sizeof(IBMNodes), &wtm);
-        PetscMalloc(NumberOfTurbines*sizeof(FSInfo), &fsi_wt);
+        STARTUP_ALLOC_GUARD("wtm", NumberOfTurbines, IBMNodes);
+        PetscCall(PetscMalloc1(NumberOfTurbines, &wtm));
+        STARTUP_ALLOC_GUARD("fsi_wt", NumberOfTurbines, FSInfo);
+        PetscCall(PetscMalloc1(NumberOfTurbines, &fsi_wt));
         for (i=0;i<NumberOfTurbines;i++) {
             fsi_wt[i].angvel_x=0;
             fsi_wt[i].angvel_y=0;
             fsi_wt[i].angvel_z=0;
             fsi_wt[i].angvel_axis=0.0;
         }
-        PetscMalloc(NumberOfTurbines*sizeof(IBMNodes), &ibm_ACD);
+        STARTUP_ALLOC_GUARD("ibm_ACD", NumberOfTurbines, IBMNodes);
+        PetscCall(PetscMalloc1(NumberOfTurbines, &ibm_ACD));
     }
 
     if (rotor_model == 4)  {
-        PetscMalloc(NumberOfTurbines*sizeof(IBMNodes), &wtm);
-        PetscMalloc(NumberOfTurbines*sizeof(FSInfo), &fsi_wt);
+        STARTUP_ALLOC_GUARD("wtm", NumberOfTurbines, IBMNodes);
+        PetscCall(PetscMalloc1(NumberOfTurbines, &wtm));
+        STARTUP_ALLOC_GUARD("fsi_wt", NumberOfTurbines, FSInfo);
+        PetscCall(PetscMalloc1(NumberOfTurbines, &fsi_wt));
         for (i=0;i<NumberOfTurbines;i++) {
             fsi_wt[i].angvel_x=0;
             fsi_wt[i].angvel_y=0;
             fsi_wt[i].angvel_z=0;
             fsi_wt[i].angvel_axis=0.0;
         }
-        PetscMalloc(NumberOfTurbines*sizeof(IBMNodes), &ibm_ACD);
+        STARTUP_ALLOC_GUARD("ibm_ACD", NumberOfTurbines, IBMNodes);
+        PetscCall(PetscMalloc1(NumberOfTurbines, &ibm_ACD));
     }
 
     if (rotor_model == 5)  {
-        PetscMalloc(NumberOfTurbines*sizeof(IBMNodes), &wtm);
-        PetscMalloc(NumberOfTurbines*sizeof(FSInfo), &fsi_wt);
+        STARTUP_ALLOC_GUARD("wtm", NumberOfTurbines, IBMNodes);
+        PetscCall(PetscMalloc1(NumberOfTurbines, &wtm));
+        STARTUP_ALLOC_GUARD("fsi_wt", NumberOfTurbines, FSInfo);
+        PetscCall(PetscMalloc1(NumberOfTurbines, &fsi_wt));
         for (i=0;i<NumberOfTurbines;i++) {
             fsi_wt[i].angvel_x=0;
             fsi_wt[i].angvel_y=0;
@@ -2191,8 +2240,10 @@ int main(int argc, char **argv)
             fsi_wt[i].angvel_axis=0.0;
         }
 
-        PetscMalloc(NumberOfTurbines*sizeof(IBMNodes), &ibm_acl2ref);
-        PetscMalloc(NumberOfTurbines*sizeof(FSInfo), &fsi_acl2ref);
+        STARTUP_ALLOC_GUARD("ibm_acl2ref", NumberOfTurbines, IBMNodes);
+        PetscCall(PetscMalloc1(NumberOfTurbines, &ibm_acl2ref));
+        STARTUP_ALLOC_GUARD("fsi_acl2ref", NumberOfTurbines, FSInfo);
+        PetscCall(PetscMalloc1(NumberOfTurbines, &fsi_acl2ref));
         for (i=0;i<NumberOfTurbines;i++) {
             fsi_acl2ref[i].angvel_x=0;
             fsi_acl2ref[i].angvel_y=0;
@@ -2200,12 +2251,15 @@ int main(int argc, char **argv)
             fsi_acl2ref[i].angvel_axis=0.0;
         }
 
-        PetscMalloc(NumberOfTurbines*sizeof(IBMNodes), &ibm_ACD);
+        STARTUP_ALLOC_GUARD("ibm_ACD", NumberOfTurbines, IBMNodes);
+        PetscCall(PetscMalloc1(NumberOfTurbines, &ibm_ACD));
     }
 
     if (rotor_model == 6)  {
-        PetscMalloc(NumberOfTurbines*sizeof(IBMNodes), &wtm);
-        PetscMalloc(NumberOfTurbines*sizeof(FSInfo), &fsi_wt);
+        STARTUP_ALLOC_GUARD("wtm", NumberOfTurbines, IBMNodes);
+        PetscCall(PetscMalloc1(NumberOfTurbines, &wtm));
+        STARTUP_ALLOC_GUARD("fsi_wt", NumberOfTurbines, FSInfo);
+        PetscCall(PetscMalloc1(NumberOfTurbines, &fsi_wt));
         for (i=0;i<NumberOfTurbines;i++) {
             fsi_wt[i].angvel_x=0;
             fsi_wt[i].angvel_y=0;
@@ -2213,8 +2267,10 @@ int main(int argc, char **argv)
             fsi_wt[i].angvel_axis=0.0;
         }
 
-        PetscMalloc(NumberOfTurbines*sizeof(IBMNodes), &ibm_acl2ref);
-        PetscMalloc(NumberOfTurbines*sizeof(FSInfo), &fsi_acl2ref);
+        STARTUP_ALLOC_GUARD("ibm_acl2ref", NumberOfTurbines, IBMNodes);
+        PetscCall(PetscMalloc1(NumberOfTurbines, &ibm_acl2ref));
+        STARTUP_ALLOC_GUARD("fsi_acl2ref", NumberOfTurbines, FSInfo);
+        PetscCall(PetscMalloc1(NumberOfTurbines, &fsi_acl2ref));
         for (i=0;i<NumberOfTurbines;i++) {
             fsi_acl2ref[i].angvel_x=0;
             fsi_acl2ref[i].angvel_y=0;
@@ -2222,13 +2278,16 @@ int main(int argc, char **argv)
             fsi_acl2ref[i].angvel_axis=0.0;
         }
 
-        PetscMalloc(NumberOfTurbines*sizeof(IBMNodes), &ibm_ACD);
+        STARTUP_ALLOC_GUARD("ibm_ACD", NumberOfTurbines, IBMNodes);
+        PetscCall(PetscMalloc1(NumberOfTurbines, &ibm_ACD));
     }
 
     if (nacelle_model) {
 
-        PetscMalloc(NumberOfNacelle*sizeof(IBMNodes), &ibm_nacelle);
-            PetscMalloc(NumberOfNacelle*sizeof(FSInfo), &fsi_nacelle);
+        STARTUP_ALLOC_GUARD("ibm_nacelle", NumberOfNacelle, IBMNodes);
+        PetscCall(PetscMalloc1(NumberOfNacelle, &ibm_nacelle));
+            STARTUP_ALLOC_GUARD("fsi_nacelle", NumberOfNacelle, FSInfo);
+            PetscCall(PetscMalloc1(NumberOfNacelle, &fsi_nacelle));
             for (i=0;i<NumberOfNacelle;i++) {
                 fsi_nacelle[i].angvel_x=0;
                 fsi_nacelle[i].angvel_y=0;
@@ -2239,6 +2298,8 @@ int main(int argc, char **argv)
     }
 
     MG_Initial(&usermg, ibm);
+
+#undef STARTUP_ALLOC_GUARD
 
     level = usermg.mglevels-1;
     user = usermg.mgctx[level].user;

@@ -146,16 +146,16 @@ PetscErrorCode MGDACreate(UserMG *usermg, PetscInt bi)
 	by = jj_periodic ? DM_BOUNDARY_PERIODIC : DM_BOUNDARY_NONE;
 	bz = kk_periodic ? DM_BOUNDARY_PERIODIC : DM_BOUNDARY_NONE;
 	
-	DMDACreate3d(PETSC_COMM_WORLD, bx, by, bz, DMDA_STENCIL_BOX,
+	PetscCall(DMDACreate3d(PETSC_COMM_WORLD, bx, by, bz, DMDA_STENCIL_BOX,
 	       user[bi].IM+1, user[bi].JM+1, user[bi].KM+1, m, n,
 	       p, 1, s, NULL, NULL, NULL,
-	       &(user[bi].da));
+	       &(user[bi].da)));
 	
 	if(rans)
-	DMDACreate3d(PETSC_COMM_WORLD, bx, by, bz, DMDA_STENCIL_BOX,
+	PetscCall(DMDACreate3d(PETSC_COMM_WORLD, bx, by, bz, DMDA_STENCIL_BOX,
 	       user[bi].IM+1, user[bi].JM+1, user[bi].KM+1, m, n,
 	       p, 2, s, NULL, NULL, NULL,
-	       &(user[bi].fda2));
+	       &(user[bi].fda2)));
 	       
 	bi=0;
 	DMDAGetInfo(user[bi].da, NULL, NULL, NULL,
@@ -168,8 +168,10 @@ PetscErrorCode MGDACreate(UserMG *usermg, PetscInt bi)
 	       PETSC_DECIDE, 1, 2, NULL, NULL, NULL,
 	       &(user[bi].da));    
   */
-    user[bi].aotopetsc = PETSC_FALSE;
-    DMDASetUniformCoordinates(user[bi].da, 0.0, 1.0, 0.0, 1.0, 0.0, 1.0);
+	user[bi].aotopetsc = PETSC_FALSE;
+	PetscCall(DMSetFromOptions(user[bi].da));
+	PetscCall(DMSetUp(user[bi].da));
+	PetscCall(DMDASetUniformCoordinates(user[bi].da, 0.0, 1.0, 0.0, 1.0, 0.0, 1.0));
     DMGetCoordinateDM(user[bi].da, &(user[bi].fda));
     DMDAGetLocalInfo(user[bi].da, &(user[bi].info));
     
@@ -185,12 +187,14 @@ PetscErrorCode MGDACreate(UserMG *usermg, PetscInt bi)
 		NULL, NULL, NULL, NULL);
       PetscPrintf(PETSC_COMM_WORLD, "DM Distribution: %i %i %i\n", m, n, p);
 	
-      DMDACreate3d(PETSC_COMM_WORLD, bx, by, bz, DMDA_STENCIL_BOX,
+      PetscCall(DMDACreate3d(PETSC_COMM_WORLD, bx, by, bz, DMDA_STENCIL_BOX,
 		 user[bi].IM+1, user[bi].JM+1, user[bi].KM+1,
 		 m, n, p, 1, s, NULL, NULL, NULL,
-		 &(user[bi].da));
-      user[bi].aotopetsc = PETSC_FALSE;
-      DMDASetUniformCoordinates(user[bi].da, 0.0, 1.0, 0.0, 1.0, 0.0, 1.0);
+		 &(user[bi].da)));
+	user[bi].aotopetsc = PETSC_FALSE;
+	PetscCall(DMSetFromOptions(user[bi].da));
+	PetscCall(DMSetUp(user[bi].da));
+	PetscCall(DMDASetUniformCoordinates(user[bi].da, 0.0, 1.0, 0.0, 1.0, 0.0, 1.0));
       DMGetCoordinateDM(user[bi].da, &(user[bi].fda));
       DMDAGetLocalInfo(user[bi].da, &(user[bi].info));
 
@@ -299,7 +303,13 @@ PetscErrorCode MG_Initial(UserMG *usermg, IBMNodes *ibm)
 	PetscOptionsGetBool(NULL, NULL, "-mg_k_semi", &usermg->ksc, NULL);
 	PetscOptionsGetBool(NULL, NULL, "-mg_j_semi", &usermg->jsc, NULL);
 	PetscOptionsGetBool(NULL, NULL, "-mg_i_semi", &usermg->isc, NULL);
-	PetscMalloc(usermg->mglevels*sizeof(MGCtx), &(usermg->mgctx));
+	if (usermg->mglevels <= 0 || usermg->mglevels > 64) {
+		PetscPrintf(PETSC_COMM_WORLD, "Invalid mglevels=%d\n", (int)usermg->mglevels);
+		SETERRQ(PETSC_COMM_WORLD, PETSC_ERR_ARG_OUTOFRANGE, "Invalid -mg_level (must be 1..64)");
+	}
+	PetscPrintf(PETSC_COMM_WORLD, "MG allocation: mglevels=%d sizeof(MGCtx)=%zu bytes=%lld\n",
+		(int)usermg->mglevels, sizeof(MGCtx), (long long)((PetscInt64)usermg->mglevels * (PetscInt64)sizeof(MGCtx)));
+	PetscCall(PetscMalloc1(usermg->mglevels, &(usermg->mgctx)));
 	mgctx = usermg->mgctx;
   
 	FILE *fd;
@@ -317,9 +327,16 @@ PetscErrorCode MG_Initial(UserMG *usermg, IBMNodes *ibm)
 	if(xyz_input) {block_number=1;}
 	else if(binary_input) fread(&block_number, sizeof(int), 1, fd);
 	else fscanf(fd, "%i\n", &block_number);
+
+	if (block_number <= 0 || block_number > 1000000) {
+		PetscPrintf(PETSC_COMM_WORLD, "Invalid block_number=%d from %s\n", block_number, str);
+		SETERRQ(PETSC_COMM_WORLD, PETSC_ERR_ARG_OUTOFRANGE, "Invalid block count in grid file");
+	}
 	
 	for (level=0; level<usermg->mglevels; level++) {
-		PetscMalloc(block_number*sizeof(UserCtx), &mgctx[level].user);
+		PetscPrintf(PETSC_COMM_WORLD, "MG allocation level %d: blocks=%d sizeof(UserCtx)=%zu bytes=%lld\n",
+			(int)level, block_number, sizeof(UserCtx), (long long)((PetscInt64)block_number * (PetscInt64)sizeof(UserCtx)));
+		PetscCall(PetscMalloc1(block_number, &mgctx[level].user));
 		for (bi=0; bi<block_number; bi++) {
 			mgctx[level].user[bi].ibm = ibm;
 			mgctx[level].user[bi].isc = &usermg->isc;

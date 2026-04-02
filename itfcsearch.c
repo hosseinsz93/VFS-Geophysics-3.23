@@ -145,8 +145,10 @@ int main(int argc, char**argv)
     fscanf(fd, "%i %i %i\n", &(user[bi].IM), &(user[bi].JM), &(user[bi].KM));
   }
   for (bi=0; bi<block_number; bi++) {
-	      DMDACreate3d(PETSC_COMM_WORLD, DM_BOUNDARY_NONE, DMDA_STENCIL_BOX, user[bi].IM+1, user[bi].JM+1, user[bi].KM+1, 1, 1, PETSC_DECIDE, 1, 2, NULL, NULL, NULL, &(user[bi].da));
-    DMDASetUniformCoordinates(user[bi].da, 0.0, 1.0, 0.0, 1.0, 0.0, 1.0);
+    PetscCall(DMDACreate3d(PETSC_COMM_WORLD, DM_BOUNDARY_NONE, DMDA_STENCIL_BOX, user[bi].IM+1, user[bi].JM+1, user[bi].KM+1, 1, 1, PETSC_DECIDE, 1, 2, NULL, NULL, NULL, &(user[bi].da)));
+    PetscCall(DMSetFromOptions(user[bi].da));
+    PetscCall(DMSetUp(user[bi].da));
+    PetscCall(DMDASetUniformCoordinates(user[bi].da, 0.0, 1.0, 0.0, 1.0, 0.0, 1.0));
     DMGetCoordinateDM(user[bi].da, &(user[bi].fda));
     DMCreateGlobalVector(user[bi].fda, &(user[bi].Coor));
     DMDAVecGetArray(user[bi].fda, user[bi].Coor, &coor);
